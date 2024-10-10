@@ -1,186 +1,122 @@
 ----------------------------
--- XML to JSON Conversion --
+-- Complete SQL Script --
 ----------------------------
-if object_id('dbo.XmlToJson') is not null
-  drop function dbo.XmlToJson
+
+-- XML to JSON Conversion
+if object_id('dbo.XmlToJson', 'FN') is not null
+    drop function dbo.XmlToJson;
 go
 
 create function dbo.XmlToJson(@xmldata xml)
 returns nvarchar(max)
 as
 begin
+    declare @json nvarchar(max);
 
-    declare @json nvarchar(max)
+    -- Convert XML nodes to JSON format
+    select @json = concat(@json, ',{'
+        + stuff((
+            select ',"'
+                    + b.c.value('local-name(.)', 'nvarchar(max)')
+                    + '":"'
+                    + b.c.value('text()[1]', 'nvarchar(max)')
+                    + '"'
+            from @xmldata.nodes('/root/*') x(a)
+            cross apply a.nodes('*') b(c)
+            for xml path(''), type
+        ).value('(./text())[1]', 'nvarchar(max)'), 1, 1, '')
+        + '}')
+    from @xmldata.nodes('/root/*') x(a);
 
-    select  @json = concat(@json, ',{'
-                    + stuff(
-                        (
-                            select ',"'
-                                    + coalesce(b.c.value('local-name(.)', 'nvarchar(max)'), '')
-                                    + '":"'
-                                    + b.c.value('text()[1]','nvarchar(max)')
-                                    + '"'
-
-                            from    x.a.nodes('*') b(c)
-
-                            for     xml path(''), type
-                        ).value('(./text())[1]', 'nvarchar(max)')
-
-                        , 1, 1, ''
-                    )
-                    + '}')
-
-    from  @xmldata.nodes('/root/*') x(a)
-
-    -- Remove leading comma
-    return stuff(@json, 1, 1, '')
-
-end
-
+    -- Remove leading comma and return the JSON result
+    return stuff(@json, 1, 1, '');
+end;
 go
 
-grant execute on dbo.XmlToJson to public
-
+grant execute on dbo.XmlToJson to public;
 go
 
----------------------
--- HMAC Encryption --
----------------------
-/*
-	Copyright © 2012 Ryan Malayter. All Rights Reserved.
 
-	Redistribution and use in source and binary forms, with or without
-	modification, are permitted provided that the following conditions are
-	met:
-
-	1. Redistributions of source code must retain the above copyright
-	notice, this list of conditions and the following disclaimer.
-
-	2. Redistributions in binary form must reproduce the above copyright
-	notice, this list of conditions and the following disclaimer in the
-	documentation and/or other materials provided with the distribution.
-
-	3. The name of the author may not be used to endorse or promote products
-	derived from this software without specific prior written permission.
-
-	THIS SOFTWARE IS PROVIDED BY Ryan Malayter "AS IS" AND ANY EXPRESS OR
-	IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-	WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-	DISCLAIMED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT,
-	INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-	(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-	SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
-	HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
-	STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-	ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-	POSSIBILITY OF SUCH DAMAGE.
-*/
-
-/* 
-	This function only takes VARBINARY parameters instead of VARCHAR
-	to prevent problems with implicit conversion from NVARCHAR to VARCHAR
-	which result in incorrect hashes for inputs including non-ASCII characters.
-	Always cast @key and @data parameters to VARBINARY when using this function.
-	Tested against HMAC vectors for MD5 and SHA1 from RFC 2202
-*/
-
-/*
-	List of secure hash algorithms (parameter @algo) supported by MSSQL
-	version. This is what is passed to the HASHBYTES system function.
-	Omit insecure hash algorithms such as MD2 through MD5
-	2005-2008R2: SHA1
-	2012-2016: SHA1 | SHA2_256 | SHA2_512
-*/
+-- HMAC Encryption
 create or alter function dbo.hmac (
 	@key	varbinary(max),
-	@data	varbinary(MAX),
+	@data	varbinary(max),
 	@algo	varchar(20)
 )
 returns varbinary(64)
 as
 begin
-	declare @ipad	bigint
-	declare @opad	bigint
-	declare @i		varbinary(64)
-	declare @o		varbinary(64)
-	declare @pos	integer
+	declare @ipad bigint = cast(0x3636363636363636 as bigint);
+	declare @opad bigint = cast(0x5C5C5C5C5C5C5C5C as bigint);
+	declare @i varbinary(64) = 0x;
+	declare @o varbinary(64) = 0x;
+	declare @pos int = 1;
 
-	-- SQL 2005 only allows XOR operations on integer types, so use bigint and iterate 8 times
-	set @ipad = cast(0x3636363636363636 as bigint) -- constants from HMAC definition
-	set @opad = cast(0x5C5C5C5C5C5C5C5C as bigint)
-
-	if len(@key) > 64 -- if the key is greater than 512 bits we hash it first per HMAC definition
-		set @key = cast(hashbytes(@algo, @key) as binary (64))
+	if len(@key) > 64
+		set @key = hashbytes(@algo, @key);
 	else
-		set @key = cast(@key as binary (64)) -- otherwise pad it out to 512 bits with zeros
-
-	set @pos = 1
-	set @i = cast('' AS varbinary(64)) -- initialize as empty binary value
+		set @key = @key + replicate(0x00, 64 - len(@key)); -- Pad to 64 bytes
 
 	while @pos <= 57
 	begin
-		set @i = @i + cast((substring(@key, @pos, 8) ^ @ipad) as varbinary(64))
-		set @pos = @pos + 8
+		set @i = @i + (substring(@key, @pos, 8) ^ @ipad);
+		set @pos = @pos + 8;
 	end
 
-	set @pos = 1
-	set @o = cast('' as varbinary(64)) -- initialize as empty binary value
+	set @pos = 1;
 
 	while @pos <= 57
 	begin
-		set @o = @o + cast((substring(@key, @pos, 8) ^ @opad) as varbinary(64))
-		set @pos = @pos + 8
+		set @o = @o + (substring(@key, @pos, 8) ^ @opad);
+		set @pos = @pos + 8;
 	end
 
-	return hashbytes(@algo, @o + hashbytes(@algo, @i + @data))
-end
+	return hashbytes(@algo, @o + hashbytes(@algo, @i + @data));
+end;
 go
 
-grant execute on dbo.HMAC to public
+grant execute on dbo.hmac to public;
 go
 
----------------------
--- Base64 Encoding --
----------------------
-if object_id('dbo.Base64') is not null
-  drop function dbo.Base64
+
+-- Base64 Encoding
+if object_id('dbo.Base64', 'FN') is not null
+    drop function dbo.Base64;
 go
 
-create function dbo.Base64(
-  @data varbinary(max),
-  @url_safe bit
+create function dbo.Base64 (
+    @data varbinary(max),
+    @url_safe bit
 )
 returns varchar(max)
 as
 begin
-  declare @base64string varchar(max)
+    declare @base64string varchar(max);
 
-   -- When converting a table to json, binary data in the table is converted to a BASE64 String
-  select @base64string = col
-  from openjson(
-    (
-      select col
-      from (select @data col) T
-      for json auto
-    )
-  ) with(col varchar(max))
+    -- Base64 encode the binary data using JSON conversion
+    select @base64string = col
+    from openjson((
+        select col
+        from (select @data col) T
+        for json auto
+    )) with (col varchar(max));
 
-  if @url_safe = 1
-  begin
-    select @base64string = replace(@base64string, '+', '-')
-    select @base64string = replace(@base64string, '/', '_')
-  end
+    -- Make Base64 URL-safe if required
+    if @url_safe = 1
+    begin
+        select @base64string = replace(@base64string, '+', '-');
+        select @base64string = replace(@base64string, '/', '_');
+    end
 
-  return @base64string
-end
+    return @base64string;
+end;
 go
 
-grant execute on dbo.Base64 to public
+grant execute on dbo.Base64 to public;
 go
 
------------------------------
--- JSON Web Token Creation --
------------------------------
+
+-- JSON Web Token (JWT) Creation
 create or alter function dbo.JWT_Encode(
 	@json_header	varchar(max),
 	@json_payload	varchar(max),
@@ -189,7 +125,6 @@ create or alter function dbo.JWT_Encode(
 returns varchar(max)
 as
 begin
-
 	declare @header		varchar(max),
 			@data		varchar(max),
 			@signature	varchar(max);
@@ -200,36 +135,39 @@ begin
 	-- Base64 encode json payload
 	select @data = dbo.Base64(convert(varbinary(max), @json_payload), 1);
 
-	-- Generate signature
-	select	@signature = dbo.HMAC(convert(varbinary(max), @secret), convert(varbinary(max), @header + '.' + @data), 'SHA2_256');
+	-- Generate signature using HMAC SHA256
+	select @signature = dbo.hmac(
+		convert(varbinary(max), @secret),
+		convert(varbinary(max), @header + '.' + @data),
+		'SHA2_256'
+	);
 
 	-- Base64 encode signature
-	select	@signature = dbo.Base64(convert(varbinary(max), @signature), 1);
+	select @signature = dbo.Base64(@signature, 1);
 
 	return @header + '.' + @data + '.' + @signature;
-end
+end;
 go
 
-grant execute on dbo.JWT_Encode to public
+grant execute on dbo.JWT_Encode to public;
 go
 
--------------------
--- Example Usage --
--------------------
+
+-- Example Usage
 select	dbo.JWT_Encode(
 			dbo.XmlToJson((select 'HS256' alg, 'JWT' typ for xml path, root)),
 			dbo.XmlToJson((select 'chris' name, 'true' admin for xml path, root)),
 			'secret'
-		)
+		);
 
 select	dbo.JWT_Encode(
 			(select 'HS256' alg, 'JWT' typ for json path, without_array_wrapper),
 			(select 'brian' name, 'true' admin for json path, without_array_wrapper),
 			'secret'
-		)
+		);
 
 select	dbo.JWT_Encode(
 			'{"alg":"HS256","typ":"JWT"}',
 			'{"name":"brian","admin":"true"}',
 			'secret'
-		)
+		);
